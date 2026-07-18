@@ -125,7 +125,8 @@ export default async function PublicClientStorefront({ params }: ClientPageProps
         whatsapp: company.whatsapp || '',
         gallery_urls: galleryUrls,
         address,
-        google_maps_url: googleMapsUrl
+        google_maps_url: googleMapsUrl,
+        email: email // <--- Add this line to satisfy the TypeScript interface
       }}
       products={products}
     />
