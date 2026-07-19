@@ -1,20 +1,27 @@
 'use server'
 
 import { createClient } from '@supabase/supabase-js'
+import bcrypt from 'bcryptjs'
+import crypto from 'crypto'
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY! // Bypasses RLS to view overview metrics
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
 )
 
-// 1. Fetch System Analytics Metrics
+function generatePassword(length = 12) {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%'
+  const bytes = crypto.randomBytes(length)
+  return Array.from(bytes, (b) => chars[b % chars.length]).join('')
+}
+
 export async function getSuperAdminMetrics() {
-  const { count: totalClients, error: clientError } = await supabaseAdmin
+  const { count: totalClients } = await supabaseAdmin
     .from('profiles')
     .select('*', { count: 'exact', head: true })
     .eq('role', 'client')
 
-  const { count: totalProducts, error: productError } = await supabaseAdmin
+  const { count: totalProducts } = await supabaseAdmin
     .from('products')
     .select('*', { count: 'exact', head: true })
 
@@ -24,57 +31,84 @@ export async function getSuperAdminMetrics() {
   }
 }
 
-// 2. Fetch the Active Client List Table
 export async function getClientList() {
-  const { data, error } = await supabaseAdmin
+  const { data } = await supabaseAdmin
     .from('profiles')
-    .select('id, client_id, company_name, created_at')
+    .select('id, client_id, company_name, email, created_at')
     .eq('role', 'client')
     .order('created_at', { ascending: false })
 
   return data || []
 }
 
-// 3. Create Client Account Action
-// 3. Create Client Account Action
 export async function createClientAccount(formData: FormData) {
   const email = formData.get('email') as string
-  const password = formData.get('password') as string
+  let password = formData.get('password') as string
   const companyName = formData.get('companyName') as string
   const clientId = (formData.get('clientId') as string).toLowerCase().replace(/\s+/g, '-')
 
-  if (!email || !password || !companyName || !clientId) {
-    return { error: 'All fields are required.' }
+  if (!email || !companyName || !clientId) {
+    return { error: 'Company name, slug, and email are required.' }
   }
 
-  // 1. Create user in Supabase Auth management with metadata
+  // Auto-generate if left blank
+  if (!password) password = generatePassword()
+
   const { data: authUser, error: authError } = await supabaseAdmin.auth.admin.createUser({
     email,
     password,
     email_confirm: true,
-    user_metadata: {
-      company_name: companyName,
-      client_id: clientId
-    }
+    user_metadata: { company_name: companyName, client_id: clientId }
   })
 
   if (authError) return { error: authError.message }
 
-  // 2. Direct Explicit Insertion with UPSERT to prevent trigger collision errors
+  const passwordHash = await bcrypt.hash(password, 10)
+
   const { error: profileError } = await supabaseAdmin
     .from('profiles')
     .upsert({
       id: authUser.user.id,
       client_id: clientId,
       company_name: companyName,
+      email,
+      password_hash: passwordHash,
       role: 'client'
-    }, { onConflict: 'id' }) // If a background trigger already created a row, update it instead of throwing an error!
+    }, { onConflict: 'id' })
 
   if (profileError) {
-    // If the database fails, roll back and remove the auth user
     await supabaseAdmin.auth.admin.deleteUser(authUser.user.id)
     return { error: profileError.message }
   }
 
+  return {
+    success: true,
+    credentials: { email, password, clientId }
+  }
+}
+
+export async function deleteClientAccount(id: string) {
+  // Deleting the auth user cascades to profiles via the FK ON DELETE CASCADE
+  const { error } = await supabaseAdmin.auth.admin.deleteUser(id)
+  if (error) return { error: error.message }
   return { success: true }
+}
+
+export async function resetClientPassword(id: string) {
+  const newPassword = generatePassword()
+
+  const { error: authError } = await supabaseAdmin.auth.admin.updateUserById(id, {
+    password: newPassword
+  })
+  if (authError) return { error: authError.message }
+
+  const passwordHash = await bcrypt.hash(newPassword, 10)
+  const { error: profileError } = await supabaseAdmin
+    .from('profiles')
+    .update({ password_hash: passwordHash })
+    .eq('id', id)
+
+  if (profileError) return { error: profileError.message }
+
+  return { success: true, password: newPassword }
 }
