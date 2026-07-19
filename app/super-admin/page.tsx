@@ -5,8 +5,7 @@ import {
   createClientAccount,
   getSuperAdminMetrics,
   getClientList,
-  deleteClientAccount,
-  resetClientPassword
+  deleteClientAccount
 } from '@/app/actions/super-admin'
 
 type Client = {
@@ -14,6 +13,7 @@ type Client = {
   client_id: string
   company_name: string
   email: string
+  password: string | null
   created_at: string
 }
 
@@ -78,11 +78,10 @@ export default function SuperAdminDashboard() {
 
   // toast for any copy action, keyed so multiple buttons can each show their own "Copied"
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
+  const [visiblePasswordId, setVisiblePasswordId] = useState<string | null>(null)
 
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
-  const [resettingId, setResettingId] = useState<string | null>(null)
-  const [resetResult, setResetResult] = useState<{ id: string; password: string } | null>(null)
 
   const loadDashboardData = useCallback(async () => {
     const [dataMetrics, dataList] = await Promise.all([getSuperAdminMetrics(), getClientList()])
@@ -102,7 +101,6 @@ export default function SuperAdminDashboard() {
 
     const form = e.currentTarget
     const formData = new FormData(form)
-    // ensure the (possibly auto-generated / edited) password state is what gets sent
     formData.set('password', password)
 
     const result = await createClientAccount(formData)
@@ -140,19 +138,6 @@ export default function SuperAdminDashboard() {
     } else {
       setActionMsg({ type: 'success', text: 'Client removed.' })
       loadDashboardData()
-    }
-  }
-
-  async function handleResetPassword(id: string) {
-    setResettingId(id)
-    setResetResult(null)
-    const result = await resetClientPassword(id)
-    setResettingId(null)
-
-    if (result?.error) {
-      setActionMsg({ type: 'error', text: result.error })
-    } else if (result?.password) {
-      setResetResult({ id, password: result.password })
     }
   }
 
@@ -261,7 +246,6 @@ export default function SuperAdminDashboard() {
                 >
                   {copiedKey === 'new-creds' ? 'Copied ✓' : 'Copy Credentials'}
                 </button>
-                <p className="text-[10px] text-slate-500">This password won't be shown again — copy it now.</p>
               </div>
             )}
           </div>
@@ -275,6 +259,7 @@ export default function SuperAdminDashboard() {
                   <tr className="border-b border-white/10 text-slate-400 text-xs uppercase tracking-wider">
                     <th className="pb-3 px-4 font-semibold">Company Name</th>
                     <th className="pb-3 px-4 font-semibold">Slug / Link</th>
+                    <th className="pb-3 px-4 font-semibold">Password</th>
                     <th className="pb-3 px-4 font-semibold">Date Registered</th>
                     <th className="pb-3 px-4 font-semibold text-right">Actions</th>
                   </tr>
@@ -282,99 +267,81 @@ export default function SuperAdminDashboard() {
                 <tbody className="divide-y divide-white/5 text-slate-300">
                   {clients.length === 0 ? (
                     <tr>
-                      <td colSpan={4} className="py-8 text-center text-slate-500 text-xs italic">No client workspaces deployed yet.</td>
+                      <td colSpan={5} className="py-8 text-center text-slate-500 text-xs italic">No client workspaces deployed yet.</td>
                     </tr>
                   ) : (
                     clients.map((client) => {
                       const link = buildLink(client.client_id)
                       const rowKey = `row-${client.id}`
+                      const pwVisible = visiblePasswordId === client.id
                       return (
-                        <React.Fragment key={client.id}>
-                          <tr className="hover:bg-white/5 transition-colors align-top">
-                            <td className="py-3 px-4 font-medium text-white">
-                              {client.company_name}
-                              <div className="text-[11px] text-slate-500 font-normal">{client.email}</div>
-                            </td>
-                            <td className="py-3 px-4 font-mono text-cyan-400 text-xs">/{client.client_id}</td>
-                            <td className="py-3 px-4 text-slate-400 text-xs">{new Date(client.created_at).toLocaleDateString()}</td>
-                            <td className="py-3 px-4">
-                              <div className="flex items-center justify-end gap-2 flex-wrap">
+                        <tr key={client.id} className="hover:bg-white/5 transition-colors align-top">
+                          <td className="py-3 px-4 font-medium text-white">
+                            {client.company_name}
+                            <div className="text-[11px] text-slate-500 font-normal">{client.email}</div>
+                          </td>
+                          <td className="py-3 px-4 font-mono text-cyan-400 text-xs">/{client.client_id}</td>
+                          <td className="py-3 px-4 font-mono text-xs text-slate-300">
+                            <div className="flex items-center gap-2">
+                              <span className="min-w-[70px]">
+                                {client.password ? (pwVisible ? client.password : '••••••••') : '—'}
+                              </span>
+                              {client.password && (
                                 <button
                                   type="button"
-                                  onClick={() =>
-                                    handleCopy(rowKey, `Email: ${client.email}\nLink: ${link}`)
-                                  }
-                                  className="text-[11px] px-2 py-1 rounded-md bg-white/5 border border-white/10 text-slate-300 hover:bg-white/10"
+                                  onClick={() => setVisiblePasswordId(pwVisible ? null : client.id)}
+                                  className="text-[10px] text-slate-500 hover:text-slate-300"
                                 >
-                                  {copiedKey === rowKey ? 'Copied ✓' : 'Copy'}
+                                  {pwVisible ? 'Hide' : 'Show'}
                                 </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleResetPassword(client.id)}
-                                  disabled={resettingId === client.id}
-                                  className="text-[11px] px-2 py-1 rounded-md bg-white/5 border border-white/10 text-slate-300 hover:bg-white/10 disabled:opacity-50"
-                                >
-                                  {resettingId === client.id ? 'Resetting…' : 'Reset Password'}
-                                </button>
-                                {confirmDeleteId === client.id ? (
-                                  <div className="flex items-center gap-1">
-                                    <button
-                                      type="button"
-                                      onClick={() => handleDelete(client.id)}
-                                      disabled={deletingId === client.id}
-                                      className="text-[11px] px-2 py-1 rounded-md bg-rose-500/20 border border-rose-500/30 text-rose-300 hover:bg-rose-500/30 disabled:opacity-50"
-                                    >
-                                      {deletingId === client.id ? 'Deleting…' : 'Confirm'}
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => setConfirmDeleteId(null)}
-                                      className="text-[11px] px-2 py-1 rounded-md bg-white/5 border border-white/10 text-slate-400 hover:bg-white/10"
-                                    >
-                                      Cancel
-                                    </button>
-                                  </div>
-                                ) : (
+                              )}
+                            </div>
+                          </td>
+                          <td className="py-3 px-4 text-slate-400 text-xs">{new Date(client.created_at).toLocaleDateString()}</td>
+                          <td className="py-3 px-4">
+                            <div className="flex items-center justify-end gap-2 flex-wrap">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleCopy(
+                                    rowKey,
+                                    `Email: ${client.email}\nPassword: ${client.password ?? ''}\nLink: ${link}`
+                                  )
+                                }
+                                className="text-[11px] px-2 py-1 rounded-md bg-white/5 border border-white/10 text-slate-300 hover:bg-white/10"
+                              >
+                                {copiedKey === rowKey ? 'Copied ✓' : 'Copy'}
+                              </button>
+                              {confirmDeleteId === client.id ? (
+                                <div className="flex items-center gap-1">
                                   <button
                                     type="button"
-                                    onClick={() => setConfirmDeleteId(client.id)}
-                                    className="text-[11px] px-2 py-1 rounded-md bg-rose-500/10 border border-rose-500/20 text-rose-400 hover:bg-rose-500/20"
+                                    onClick={() => handleDelete(client.id)}
+                                    disabled={deletingId === client.id}
+                                    className="text-[11px] px-2 py-1 rounded-md bg-rose-500/20 border border-rose-500/30 text-rose-300 hover:bg-rose-500/30 disabled:opacity-50"
                                   >
-                                    Delete
+                                    {deletingId === client.id ? 'Deleting…' : 'Confirm'}
                                   </button>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-
-                          {resetResult?.id === client.id && (
-                            <tr>
-                              <td colSpan={4} className="px-4 pb-3">
-                                <div className="bg-slate-900 border border-white/10 rounded-lg p-3 flex items-center justify-between gap-3 text-xs">
-                                  <div className="font-mono text-slate-300 break-all">
-                                    New password for <span className="text-cyan-400">{client.company_name}</span>: {resetResult.password}
-                                  </div>
-                                  <div className="flex items-center gap-2 shrink-0">
-                                    <button
-                                      type="button"
-                                      onClick={() => handleCopy(`reset-${client.id}`, resetResult.password)}
-                                      className="px-2 py-1 rounded-md bg-white/10 hover:bg-white/20"
-                                    >
-                                      {copiedKey === `reset-${client.id}` ? 'Copied ✓' : 'Copy'}
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => setResetResult(null)}
-                                      className="px-2 py-1 rounded-md bg-white/5 hover:bg-white/10 text-slate-400"
-                                    >
-                                      Dismiss
-                                    </button>
-                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfirmDeleteId(null)}
+                                    className="text-[11px] px-2 py-1 rounded-md bg-white/5 border border-white/10 text-slate-400 hover:bg-white/10"
+                                  >
+                                    Cancel
+                                  </button>
                                 </div>
-                              </td>
-                            </tr>
-                          )}
-                        </React.Fragment>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteId(client.id)}
+                                  className="text-[11px] px-2 py-1 rounded-md bg-rose-500/10 border border-rose-500/20 text-rose-400 hover:bg-rose-500/20"
+                                >
+                                  Delete
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
                       )
                     })
                   )}

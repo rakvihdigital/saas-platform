@@ -1,13 +1,34 @@
 'use server'
 
 import { createClient } from '@supabase/supabase-js'
-import bcrypt from 'bcryptjs'
 import crypto from 'crypto'
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 )
+
+const ENCRYPTION_KEY = Buffer.from(process.env.PROFILE_ENCRYPTION_KEY!, 'hex') // 32 bytes
+
+function encryptPassword(plain: string) {
+  const iv = crypto.randomBytes(12)
+  const cipher = crypto.createCipheriv('aes-256-gcm', ENCRYPTION_KEY, iv)
+  const encrypted = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()])
+  const authTag = cipher.getAuthTag()
+  // store iv + authTag + ciphertext together, base64
+  return Buffer.concat([iv, authTag, encrypted]).toString('base64')
+}
+
+function decryptPassword(stored: string) {
+  const buf = Buffer.from(stored, 'base64')
+  const iv = buf.subarray(0, 12)
+  const authTag = buf.subarray(12, 28)
+  const encrypted = buf.subarray(28)
+  const decipher = crypto.createDecipheriv('aes-256-gcm', ENCRYPTION_KEY, iv)
+  decipher.setAuthTag(authTag)
+  const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()])
+  return decrypted.toString('utf8')
+}
 
 function generatePassword(length = 12) {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%'
@@ -34,11 +55,18 @@ export async function getSuperAdminMetrics() {
 export async function getClientList() {
   const { data } = await supabaseAdmin
     .from('profiles')
-    .select('id, client_id, company_name, email, created_at')
+    .select('id, client_id, company_name, email, password_encrypted, created_at')
     .eq('role', 'client')
     .order('created_at', { ascending: false })
 
-  return data || []
+  if (!data) return []
+
+  // Decrypt for display in the admin table. Never send this data anywhere
+  // other than the authenticated super-admin dashboard.
+  return data.map((row) => ({
+    ...row,
+    password: row.password_encrypted ? decryptPassword(row.password_encrypted) : null
+  }))
 }
 
 export async function createClientAccount(formData: FormData) {
@@ -51,7 +79,6 @@ export async function createClientAccount(formData: FormData) {
     return { error: 'Company name, slug, and email are required.' }
   }
 
-  // Auto-generate if left blank
   if (!password) password = generatePassword()
 
   const { data: authUser, error: authError } = await supabaseAdmin.auth.admin.createUser({
@@ -63,8 +90,6 @@ export async function createClientAccount(formData: FormData) {
 
   if (authError) return { error: authError.message }
 
-  const passwordHash = await bcrypt.hash(password, 10)
-
   const { error: profileError } = await supabaseAdmin
     .from('profiles')
     .upsert({
@@ -72,7 +97,7 @@ export async function createClientAccount(formData: FormData) {
       client_id: clientId,
       company_name: companyName,
       email,
-      password_hash: passwordHash,
+      password_encrypted: encryptPassword(password),
       role: 'client'
     }, { onConflict: 'id' })
 
@@ -92,23 +117,4 @@ export async function deleteClientAccount(id: string) {
   const { error } = await supabaseAdmin.auth.admin.deleteUser(id)
   if (error) return { error: error.message }
   return { success: true }
-}
-
-export async function resetClientPassword(id: string) {
-  const newPassword = generatePassword()
-
-  const { error: authError } = await supabaseAdmin.auth.admin.updateUserById(id, {
-    password: newPassword
-  })
-  if (authError) return { error: authError.message }
-
-  const passwordHash = await bcrypt.hash(newPassword, 10)
-  const { error: profileError } = await supabaseAdmin
-    .from('profiles')
-    .update({ password_hash: passwordHash })
-    .eq('id', id)
-
-  if (profileError) return { error: profileError.message }
-
-  return { success: true, password: newPassword }
 }
